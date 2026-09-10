@@ -1,0 +1,16 @@
+---
+# === AAP Connection Settings ===
+# Primary AAP (export source)
+primary_aap_hostname: "https://aap2-7.example.org"
+primary_aap_username: "admin"
+primary_aap_password: "pass123"
+primary_aap_validate_certs: false
+
+# Secondary AAP (import target)
+secondary_aap_hostname: "https://aap2-7-2nd.example.org"
+secondary_aap_username: "admin"
+secondary_aap_password: "pass123"
+secondary_aap_validate_certs: false
+
+# === Export/Import Settings ===
+output_path: "{{ playbook_dir }}/../config-data"

@@ -1,0 +1,191 @@
+---
+# Drift check: export from both Primary and Secondary, then diff
+# Runs independently of the export/import cycle
+#
+# Usage:
+#   ansible-playbook drift-check/drift-check.yml
+#
+- name: Export from Primary for drift comparison
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    controller_hostname: "{{ primary_aap_hostname }}"
+    controller_username: "{{ primary_aap_username }}"
+    controller_password: "{{ primary_aap_password }}"
+    controller_validate_certs: "{{ primary_aap_validate_certs }}"
+    output_path: "{{ playbook_dir }}/../config-data/drift/primary"
+
+  pre_tasks:
+    - name: Clean previous drift data (primary)
+      ansible.builtin.file:
+        path: "{{ output_path }}"
+        state: "{{ item }}"
+        mode: "0755"
+      loop:
+        - absent
+        - directory
+
+  roles:
+    - role: infra.controller_configuration.filetree_create
+
+- name: Export from Secondary for drift comparison
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    controller_hostname: "{{ secondary_aap_hostname }}"
+    controller_username: "{{ secondary_aap_username }}"
+    controller_password: "{{ secondary_aap_password }}"
+    controller_validate_certs: "{{ secondary_aap_validate_certs }}"
+    output_path: "{{ playbook_dir }}/../config-data/drift/secondary"
+
+  pre_tasks:
+    - name: Clean previous drift data (secondary)
+      ansible.builtin.file:
+        path: "{{ output_path }}"
+        state: "{{ item }}"
+        mode: "0755"
+      loop:
+        - absent
+        - directory
+
+  roles:
+    - role: infra.controller_configuration.filetree_create
+
+- name: Compare Primary vs Secondary definitions
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    drift_primary_dir: "{{ playbook_dir }}/../config-data/drift/primary"
+    drift_secondary_dir: "{{ playbook_dir }}/../config-data/drift/secondary"
+    drift_report_file: "{{ playbook_dir }}/../config-data/drift/drift_report.txt"
+
+  tasks:
+    - name: Find all YAML files in primary export
+      ansible.builtin.find:
+        paths: "{{ drift_primary_dir }}"
+        patterns: "*.yml,*.yaml"
+        recurse: true
+      register: primary_files
+
+    - name: Find all YAML files in secondary export
+      ansible.builtin.find:
+        paths: "{{ drift_secondary_dir }}"
+        patterns: "*.yml,*.yaml"
+        recurse: true
+      register: secondary_files
+
+    - name: Build file lists (relative paths)
+      ansible.builtin.set_fact:
+        primary_rel_files: >-
+          {{ primary_files.files | map(attribute='path')
+             | map('replace', drift_primary_dir + '/', '')
+             | sort | list }}
+        secondary_rel_files: >-
+          {{ secondary_files.files | map(attribute='path')
+             | map('replace', drift_secondary_dir + '/', '')
+             | sort | list }}
+
+    - name: Files only in Primary (missing from Secondary)
+      ansible.builtin.set_fact:
+        only_in_primary: "{{ primary_rel_files | difference(secondary_rel_files) }}"
+
+    - name: Files only in Secondary (extra on Secondary)
+      ansible.builtin.set_fact:
+        only_in_secondary: "{{ secondary_rel_files | difference(primary_rel_files) }}"
+
+    - name: Common files to compare
+      ansible.builtin.set_fact:
+        common_files: "{{ primary_rel_files | intersect(secondary_rel_files) }}"
+
+    - name: Compare content of common files
+      ansible.builtin.shell: |
+        diff -u "{{ drift_primary_dir }}/{{ item }}" \
+               "{{ drift_secondary_dir }}/{{ item }}" 2>&1 || true
+      loop: "{{ common_files }}"
+      register: diff_results
+      changed_when: false
+
+    - name: Identify files with differences
+      ansible.builtin.set_fact:
+        drifted_files: >-
+          {{ diff_results.results
+             | selectattr('stdout', 'ne', '')
+             | map(attribute='item')
+             | list }}
+        diff_details: >-
+          {{ diff_results.results
+             | selectattr('stdout', 'ne', '')
+             | list }}
+
+    - name: Generate drift report
+      ansible.builtin.copy:
+        content: |
+          ============================================
+          AAP Drift Report
+          Generated: {{ now(utc=true) | string }}
+          Primary:   {{ primary_aap_hostname }}
+          Secondary: {{ secondary_aap_hostname }}
+          ============================================
+
+          --- Summary ---
+          Total primary files:   {{ primary_rel_files | length }}
+          Total secondary files: {{ secondary_rel_files | length }}
+          Common files:          {{ common_files | length }}
+          Files with drift:      {{ drifted_files | length }}
+          Only in Primary:       {{ only_in_primary | length }}
+          Only in Secondary:     {{ only_in_secondary | length }}
+
+          {% if only_in_primary | length > 0 %}
+          --- Files only in Primary (missing from Secondary) ---
+          {% for f in only_in_primary %}
+          - {{ f }}
+          {% endfor %}
+          {% endif %}
+
+          {% if only_in_secondary | length > 0 %}
+          --- Files only in Secondary (not in Primary) ---
+          {% for f in only_in_secondary %}
+          - {{ f }}
+          {% endfor %}
+          {% endif %}
+
+          {% if drifted_files | length > 0 %}
+          --- Files with content differences ---
+          {% for f in drifted_files %}
+          - {{ f }}
+          {% endfor %}
+
+          --- Detailed Diffs ---
+          {% for d in diff_details %}
+          ===== {{ d.item }} =====
+          {{ d.stdout }}
+
+          {% endfor %}
+          {% endif %}
+
+          {% if drifted_files | length == 0 and only_in_primary | length == 0 and only_in_secondary | length == 0 %}
+          *** No drift detected. Primary and Secondary are in sync. ***
+          {% endif %}
+        dest: "{{ drift_report_file }}"
+        mode: "0644"
+
+    - name: Display drift summary
+      ansible.builtin.debug:
+        msg: |
+          === Drift Check Results ===
+          Common files: {{ common_files | length }}
+          Drifted:      {{ drifted_files | length }}
+          Only Primary: {{ only_in_primary | length }}
+          Only Secondary: {{ only_in_secondary | length }}
+          Full report: {{ drift_report_file }}
+
+    - name: Warn if drift detected
+      ansible.builtin.debug:
+        msg: "WARNING: Drift detected in {{ drifted_files | length }} file(s). Review {{ drift_report_file }}"
+      when: drifted_files | length > 0 or only_in_primary | length > 0

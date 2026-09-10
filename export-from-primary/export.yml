@@ -1,0 +1,51 @@
+---
+# Export AAP Controller configuration from Primary node
+# Uses infra.controller_configuration.filetree_create to dump all definitions
+#
+# Usage:
+#   ansible-playbook export-from-primary/export.yml
+#
+- name: Export configuration from Primary AAP
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    controller_hostname: "{{ primary_aap_hostname }}"
+    controller_username: "{{ primary_aap_username }}"
+    controller_password: "{{ primary_aap_password }}"
+    controller_validate_certs: "{{ primary_aap_validate_certs }}"
+
+    # filetree_create output directory
+    output_path: "{{ playbook_dir }}/../config-data/primary"
+
+  pre_tasks:
+    - name: Ensure output directory exists
+      ansible.builtin.file:
+        path: "{{ output_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Record export timestamp
+      ansible.builtin.copy:
+        content: |
+          export_source: "{{ controller_hostname }}"
+          export_time: "{{ now(utc=true) | string }}"
+          export_user: "{{ controller_username }}"
+        dest: "{{ output_path }}/../export_metadata.yml"
+        mode: "0644"
+
+  roles:
+    - role: infra.controller_configuration.filetree_create
+
+  post_tasks:
+    - name: Show exported files summary
+      ansible.builtin.find:
+        paths: "{{ output_path }}"
+        recurse: true
+        file_type: file
+      register: exported_files
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Exported {{ exported_files.matched }} files to {{ output_path }}"

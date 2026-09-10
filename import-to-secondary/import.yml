@@ -1,0 +1,66 @@
+---
+# Import AAP Controller configuration to Secondary node
+# Uses infra.controller_configuration.filetree_read + dispatch
+#
+# Usage:
+#   ansible-playbook import-to-secondary/import.yml
+#
+- name: Import configuration to Secondary AAP
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    controller_hostname: "{{ secondary_aap_hostname }}"
+    controller_username: "{{ secondary_aap_username }}"
+    controller_password: "{{ secondary_aap_password }}"
+    controller_validate_certs: "{{ secondary_aap_validate_certs }}"
+
+    # filetree_read input directory (output of export)
+    dir_orgs_vars: "{{ playbook_dir }}/../config-data/primary"
+    dir_global_vars: "{{ playbook_dir }}/../config-data/primary"
+
+  pre_tasks:
+    - name: Check export data exists
+      ansible.builtin.stat:
+        path: "{{ dir_orgs_vars }}"
+      register: export_dir
+
+    - name: Fail if no export data
+      ansible.builtin.fail:
+        msg: >
+          Export data not found at {{ dir_orgs_vars }}.
+          Run export-from-primary/export.yml first.
+      when: not export_dir.stat.exists
+
+    - name: Show export metadata
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../config-data/export_metadata.yml"
+        name: export_meta
+      ignore_errors: true
+
+    - name: Report source info
+      ansible.builtin.debug:
+        msg: "Importing from: {{ export_meta | default('metadata not found') }}"
+
+  roles:
+    # Read exported YAML files into controller_* variables
+    - role: infra.controller_configuration.filetree_read
+
+    # Apply configuration in dependency order
+    # (organizations → credentials → projects → inventories → templates → ...)
+    - role: infra.controller_configuration.dispatch
+
+  post_tasks:
+    - name: Record import timestamp
+      ansible.builtin.copy:
+        content: |
+          import_target: "{{ controller_hostname }}"
+          import_time: "{{ now(utc=true) | string }}"
+          import_user: "{{ controller_username }}"
+        dest: "{{ playbook_dir }}/../config-data/import_metadata.yml"
+        mode: "0644"
+
+    - name: Import complete
+      ansible.builtin.debug:
+        msg: "Configuration imported to {{ controller_hostname }} successfully."
