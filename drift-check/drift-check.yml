@@ -1,9 +1,49 @@
 ---
 # Drift check: export from both Primary and Secondary, then diff
+# Generates a report even if one or both AAP nodes are unreachable.
 #
 # Usage:
 #   ansible-playbook drift-check/drift-check.yml -e @group_vars/all.yml
 #
+- name: Check AAP connectivity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Check Primary AAP connectivity
+      ansible.builtin.uri:
+        url: "{{ primary_aap_hostname }}/api/gateway/v1/"
+        validate_certs: "{{ primary_aap_validate_certs }}"
+        timeout: 15
+        status_code: [200, 301, 302, 401, 403]
+      register: primary_ping
+      ignore_errors: true
+
+    - name: Check Secondary AAP connectivity
+      ansible.builtin.uri:
+        url: "{{ secondary_aap_hostname }}/api/gateway/v1/"
+        validate_certs: "{{ secondary_aap_validate_certs }}"
+        timeout: 15
+        status_code: [200, 301, 302, 401, 403]
+      register: secondary_ping
+      ignore_errors: true
+
+    - name: Set connectivity facts
+      ansible.builtin.set_fact:
+        primary_reachable: "{{ primary_ping is succeeded }}"
+        secondary_reachable: "{{ secondary_ping is succeeded }}"
+        primary_export_error: "{{ primary_ping.msg | default('Unknown error') }}"
+        secondary_export_error: "{{ secondary_ping.msg | default('Unknown error') }}"
+
+    - name: Report Primary status
+      ansible.builtin.debug:
+        msg: "Primary AAP ({{ primary_aap_hostname }}): {{ 'REACHABLE' if primary_reachable | bool else 'UNREACHABLE - ' + primary_export_error }}"
+
+    - name: Report Secondary status
+      ansible.builtin.debug:
+        msg: "Secondary AAP ({{ secondary_aap_hostname }}): {{ 'REACHABLE' if secondary_reachable | bool else 'UNREACHABLE - ' + secondary_export_error }}"
+
 - name: Export from Primary for drift comparison
   hosts: localhost
   connection: local
@@ -26,6 +66,10 @@
       loop:
         - absent
         - directory
+
+    - name: Skip export if Primary is unreachable
+      ansible.builtin.meta: end_play
+      when: not (primary_reachable | bool)
 
   roles:
     - role: infra.aap_configuration_extended.filetree_create
@@ -69,6 +113,10 @@
         - absent
         - directory
 
+    - name: Skip export if Secondary is unreachable
+      ansible.builtin.meta: end_play
+      when: not (secondary_reachable | bool)
+
   roles:
     - role: infra.aap_configuration_extended.filetree_create
       vars:
@@ -99,126 +147,239 @@
     drift_report_file: "{{ playbook_dir }}/../config-data/drift/drift_report.txt"
 
   tasks:
-    - name: Find all YAML files in primary export
-      ansible.builtin.find:
-        paths: "{{ drift_primary_dir }}"
-        patterns: "*.yml,*.yaml"
-        recurse: true
-      register: primary_files
+    # --- Error cases: one or both AAPs unreachable ---
+    - name: Generate error report (both unreachable)
+      when: not (primary_reachable | bool) and not (secondary_reachable | bool)
+      block:
+        - name: Write error report (both unreachable)
+          ansible.builtin.copy:
+            content: |
+              ============================================
+              AAP Drift Report
+              Generated: {{ now(utc=true) | string }}
+              Primary:   {{ primary_aap_hostname }}
+              Secondary: {{ secondary_aap_hostname }}
+              ============================================
 
-    - name: Find all YAML files in secondary export
-      ansible.builtin.find:
-        paths: "{{ drift_secondary_dir }}"
-        patterns: "*.yml,*.yaml"
-        recurse: true
-      register: secondary_files
+              *** ERROR: Both AAP nodes are unreachable ***
 
-    - name: Build file lists (relative paths)
-      ansible.builtin.set_fact:
-        primary_rel_files: >-
-          {{ primary_files.files | map(attribute='path')
-             | map('regex_replace', '^.*/drift/primary/', '')
-             | sort | list }}
-        secondary_rel_files: >-
-          {{ secondary_files.files | map(attribute='path')
-             | map('regex_replace', '^.*/drift/secondary/', '')
-             | sort | list }}
+              Primary ({{ primary_aap_hostname }}):
+                {{ primary_export_error }}
 
-    - name: Files only in Primary (missing from Secondary)
-      ansible.builtin.set_fact:
-        only_in_primary: "{{ primary_rel_files | difference(secondary_rel_files) }}"
+              Secondary ({{ secondary_aap_hostname }}):
+                {{ secondary_export_error }}
 
-    - name: Files only in Secondary (extra on Secondary)
-      ansible.builtin.set_fact:
-        only_in_secondary: "{{ secondary_rel_files | difference(primary_rel_files) }}"
+              Drift comparison could not be performed.
+            dest: "{{ drift_report_file }}"
+            mode: "0644"
 
-    - name: Common files to compare
-      ansible.builtin.set_fact:
-        common_files: "{{ primary_rel_files | intersect(secondary_rel_files) }}"
+        - name: Display error (both unreachable)
+          ansible.builtin.debug:
+            msg: |
+              === Drift Check Results ===
+              ERROR: Both AAP nodes are unreachable. Comparison skipped.
+              Primary:   {{ primary_export_error }}
+              Secondary: {{ secondary_export_error }}
+              Full report: {{ drift_report_file }}
 
-    - name: Compare content of common files
-      ansible.builtin.shell: |
-        diff -u "{{ drift_primary_dir }}/{{ item }}" \
-               "{{ drift_secondary_dir }}/{{ item }}" 2>&1 || true
-      loop: "{{ common_files }}"
-      register: diff_results
-      changed_when: false
+    - name: Generate error report (primary unreachable)
+      when: not (primary_reachable | bool) and (secondary_reachable | bool)
+      block:
+        - name: Count secondary files
+          ansible.builtin.find:
+            paths: "{{ drift_secondary_dir }}"
+            patterns: "*.yml,*.yaml"
+            recurse: true
+          register: secondary_files_count
 
-    - name: Identify files with differences
-      ansible.builtin.set_fact:
-        drifted_files: >-
-          {{ diff_results.results
-             | selectattr('stdout', 'ne', '')
-             | map(attribute='item')
-             | list }}
-        diff_details: >-
-          {{ diff_results.results
-             | selectattr('stdout', 'ne', '')
-             | list }}
+        - name: Write error report (primary unreachable)
+          ansible.builtin.copy:
+            content: |
+              ============================================
+              AAP Drift Report
+              Generated: {{ now(utc=true) | string }}
+              Primary:   {{ primary_aap_hostname }}
+              Secondary: {{ secondary_aap_hostname }}
+              ============================================
 
-    - name: Generate drift report
-      ansible.builtin.copy:
-        content: |
-          ============================================
-          AAP Drift Report
-          Generated: {{ now(utc=true) | string }}
-          Primary:   {{ primary_aap_hostname }}
-          Secondary: {{ secondary_aap_hostname }}
-          ============================================
+              *** ERROR: Primary AAP is unreachable ***
 
-          --- Summary ---
-          Total primary files:   {{ primary_rel_files | length }}
-          Total secondary files: {{ secondary_rel_files | length }}
-          Common files:          {{ common_files | length }}
-          Files with drift:      {{ drifted_files | length }}
-          Only in Primary:       {{ only_in_primary | length }}
-          Only in Secondary:     {{ only_in_secondary | length }}
+              Primary ({{ primary_aap_hostname }}):
+                {{ primary_export_error }}
 
-          {% if only_in_primary | length > 0 %}
-          --- Files only in Primary (missing from Secondary) ---
-          {% for f in only_in_primary %}
-          - {{ f }}
-          {% endfor %}
-          {% endif %}
+              Secondary export succeeded ({{ secondary_files_count.matched }} files).
+              Drift comparison could not be performed because Primary data is unavailable.
+            dest: "{{ drift_report_file }}"
+            mode: "0644"
 
-          {% if only_in_secondary | length > 0 %}
-          --- Files only in Secondary (not in Primary) ---
-          {% for f in only_in_secondary %}
-          - {{ f }}
-          {% endfor %}
-          {% endif %}
+        - name: Display error (primary unreachable)
+          ansible.builtin.debug:
+            msg: |
+              === Drift Check Results ===
+              ERROR: Primary AAP ({{ primary_aap_hostname }}) is unreachable. Comparison skipped.
+              Full report: {{ drift_report_file }}
 
-          {% if drifted_files | length > 0 %}
-          --- Files with content differences ---
-          {% for f in drifted_files %}
-          - {{ f }}
-          {% endfor %}
+    - name: Generate error report (secondary unreachable)
+      when: (primary_reachable | bool) and not (secondary_reachable | bool)
+      block:
+        - name: Count primary files
+          ansible.builtin.find:
+            paths: "{{ drift_primary_dir }}"
+            patterns: "*.yml,*.yaml"
+            recurse: true
+          register: primary_files_count
 
-          --- Detailed Diffs ---
-          {% for d in diff_details %}
-          ===== {{ d.item }} =====
-          {{ d.stdout }}
+        - name: Write error report (secondary unreachable)
+          ansible.builtin.copy:
+            content: |
+              ============================================
+              AAP Drift Report
+              Generated: {{ now(utc=true) | string }}
+              Primary:   {{ primary_aap_hostname }}
+              Secondary: {{ secondary_aap_hostname }}
+              ============================================
 
-          {% endfor %}
-          {% endif %}
+              *** ERROR: Secondary AAP is unreachable ***
 
-          {% if drifted_files | length == 0 and only_in_primary | length == 0 and only_in_secondary | length == 0 %}
-          *** No drift detected. Primary and Secondary are in sync. ***
-          {% endif %}
-        dest: "{{ drift_report_file }}"
-        mode: "0644"
+              Secondary ({{ secondary_aap_hostname }}):
+                {{ secondary_export_error }}
 
-    - name: Display drift summary
-      ansible.builtin.debug:
-        msg: |
-          === Drift Check Results ===
-          Common files: {{ common_files | length }}
-          Drifted:      {{ drifted_files | length }}
-          Only Primary: {{ only_in_primary | length }}
-          Only Secondary: {{ only_in_secondary | length }}
-          Full report: {{ drift_report_file }}
+              Primary export succeeded ({{ primary_files_count.matched }} files).
+              Drift comparison could not be performed because Secondary data is unavailable.
+            dest: "{{ drift_report_file }}"
+            mode: "0644"
 
-    - name: Warn if drift detected
-      ansible.builtin.debug:
-        msg: "WARNING: Drift detected. Review {{ drift_report_file }}"
-      when: drifted_files | length > 0 or only_in_primary | length > 0
+        - name: Display error (secondary unreachable)
+          ansible.builtin.debug:
+            msg: |
+              === Drift Check Results ===
+              ERROR: Secondary AAP ({{ secondary_aap_hostname }}) is unreachable. Comparison skipped.
+              Full report: {{ drift_report_file }}
+
+    # --- Normal case: both reachable ---
+    - name: Normal drift comparison
+      when: (primary_reachable | bool) and (secondary_reachable | bool)
+      block:
+        - name: Find all YAML files in primary export
+          ansible.builtin.find:
+            paths: "{{ drift_primary_dir }}"
+            patterns: "*.yml,*.yaml"
+            recurse: true
+          register: primary_files
+
+        - name: Find all YAML files in secondary export
+          ansible.builtin.find:
+            paths: "{{ drift_secondary_dir }}"
+            patterns: "*.yml,*.yaml"
+            recurse: true
+          register: secondary_files
+
+        - name: Build file lists (relative paths)
+          ansible.builtin.set_fact:
+            primary_rel_files: >-
+              {{ primary_files.files | map(attribute='path')
+                 | map('regex_replace', '^.*/drift/primary/', '')
+                 | sort | list }}
+            secondary_rel_files: >-
+              {{ secondary_files.files | map(attribute='path')
+                 | map('regex_replace', '^.*/drift/secondary/', '')
+                 | sort | list }}
+
+        - name: Files only in Primary (missing from Secondary)
+          ansible.builtin.set_fact:
+            only_in_primary: "{{ primary_rel_files | difference(secondary_rel_files) }}"
+
+        - name: Files only in Secondary (extra on Secondary)
+          ansible.builtin.set_fact:
+            only_in_secondary: "{{ secondary_rel_files | difference(primary_rel_files) }}"
+
+        - name: Common files to compare
+          ansible.builtin.set_fact:
+            common_files: "{{ primary_rel_files | intersect(secondary_rel_files) }}"
+
+        - name: Compare content of common files
+          ansible.builtin.shell: |
+            diff -u "{{ drift_primary_dir }}/{{ item }}" \
+                   "{{ drift_secondary_dir }}/{{ item }}" 2>&1 || true
+          loop: "{{ common_files }}"
+          register: diff_results
+          changed_when: false
+
+        - name: Identify files with differences
+          ansible.builtin.set_fact:
+            drifted_files: >-
+              {{ diff_results.results
+                 | selectattr('stdout', 'ne', '')
+                 | map(attribute='item')
+                 | list }}
+            diff_details: >-
+              {{ diff_results.results
+                 | selectattr('stdout', 'ne', '')
+                 | list }}
+
+        - name: Generate drift report
+          ansible.builtin.copy:
+            content: |
+              ============================================
+              AAP Drift Report
+              Generated: {{ now(utc=true) | string }}
+              Primary:   {{ primary_aap_hostname }}
+              Secondary: {{ secondary_aap_hostname }}
+              ============================================
+
+              --- Summary ---
+              Total primary files:   {{ primary_rel_files | length }}
+              Total secondary files: {{ secondary_rel_files | length }}
+              Common files:          {{ common_files | length }}
+              Files with drift:      {{ drifted_files | length }}
+              Only in Primary:       {{ only_in_primary | length }}
+              Only in Secondary:     {{ only_in_secondary | length }}
+
+              {% if only_in_primary | length > 0 %}
+              --- Files only in Primary (missing from Secondary) ---
+              {% for f in only_in_primary %}
+              - {{ f }}
+              {% endfor %}
+              {% endif %}
+
+              {% if only_in_secondary | length > 0 %}
+              --- Files only in Secondary (not in Primary) ---
+              {% for f in only_in_secondary %}
+              - {{ f }}
+              {% endfor %}
+              {% endif %}
+
+              {% if drifted_files | length > 0 %}
+              --- Files with content differences ---
+              {% for f in drifted_files %}
+              - {{ f }}
+              {% endfor %}
+
+              --- Detailed Diffs ---
+              {% for d in diff_details %}
+              ===== {{ d.item }} =====
+              {{ d.stdout }}
+
+              {% endfor %}
+              {% endif %}
+
+              {% if drifted_files | length == 0 and only_in_primary | length == 0 and only_in_secondary | length == 0 %}
+              *** No drift detected. Primary and Secondary are in sync. ***
+              {% endif %}
+            dest: "{{ drift_report_file }}"
+            mode: "0644"
+
+        - name: Display drift summary
+          ansible.builtin.debug:
+            msg: |
+              === Drift Check Results ===
+              Common files: {{ common_files | length }}
+              Drifted:      {{ drifted_files | length }}
+              Only Primary: {{ only_in_primary | length }}
+              Only Secondary: {{ only_in_secondary | length }}
+              Full report: {{ drift_report_file }}
+
+        - name: Warn if drift detected
+          ansible.builtin.debug:
+            msg: "WARNING: Drift detected. Review {{ drift_report_file }}"
+          when: drifted_files | length > 0 or only_in_primary | length > 0
