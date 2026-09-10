@@ -8,6 +8,9 @@ primary_aap_username: "admin"
 # primary_aap_password: AAP admin password (consider using ansible-vault)
 primary_aap_password: "changeme"
 primary_aap_validate_certs: false
+# primary_aap_oauthtoken: OAuth token for AAP 2.5+ Gateway API
+# Generate via: curl -k -u admin:password -X POST https://primary-aap/api/gateway/v1/tokens/
+# primary_aap_oauthtoken: "your-primary-oauth-token"
 
 # Secondary AAP (import target)
 # secondary_aap_hostname: set to your Secondary AAP URL (e.g. "https://secondary-aap.example.org")
@@ -17,6 +20,6 @@ secondary_aap_username: "admin"
 # secondary_aap_password: AAP admin password (consider using ansible-vault)
 secondary_aap_password: "changeme"
 secondary_aap_validate_certs: false
-
-# === Export/Import Settings ===
-output_path: "{{ playbook_dir }}/../config-data"
+# secondary_aap_oauthtoken: OAuth token for AAP 2.5+ Gateway API
+# Generate via: curl -k -u admin:password -X POST https://secondary-aap/api/gateway/v1/tokens/
+# secondary_aap_oauthtoken: "your-secondary-oauth-token"

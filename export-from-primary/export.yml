@@ -1,9 +1,9 @@
 ---
 # Export AAP Controller configuration from Primary node
-# Uses infra.controller_configuration.filetree_create to dump all definitions
+# Uses infra.aap_configuration_extended.filetree_create (AAP 2.5+)
 #
 # Usage:
-#   ansible-playbook export-from-primary/export.yml
+#   ansible-playbook export-from-primary/export.yml -e @group_vars/all.yml
 #
 - name: Export configuration from Primary AAP
   hosts: localhost
@@ -11,13 +11,11 @@
   gather_facts: false
 
   vars:
-    controller_hostname: "{{ primary_aap_hostname }}"
-    controller_username: "{{ primary_aap_username }}"
-    controller_password: "{{ primary_aap_password }}"
-    controller_oauthtoken: "{{ primary_aap_oauthtoken | default(omit) }}"
-    controller_validate_certs: "{{ primary_aap_validate_certs }}"
-
-    # filetree_create output directory
+    aap_hostname: "{{ primary_aap_hostname }}"
+    aap_username: "{{ primary_aap_username }}"
+    aap_password: "{{ primary_aap_password }}"
+    aap_oauthtoken: "{{ primary_aap_oauthtoken | default(omit) }}"
+    aap_validate_certs: "{{ primary_aap_validate_certs }}"
     output_path: "{{ playbook_dir }}/../config-data/primary"
 
   pre_tasks:
@@ -30,14 +28,30 @@
     - name: Record export timestamp
       ansible.builtin.copy:
         content: |
-          export_source: "{{ controller_hostname }}"
+          export_source: "{{ aap_hostname }}"
           export_time: "{{ now(utc=true) | string }}"
-          export_user: "{{ controller_username }}"
+          export_user: "{{ aap_username }}"
         dest: "{{ output_path }}/../export_metadata.yml"
         mode: "0644"
 
   roles:
-    - role: infra.controller_configuration.filetree_create
+    - role: infra.aap_configuration_extended.filetree_create
+      vars:
+        input_tag:
+          - controller_inventories
+          - controller_credentials
+          - controller_credential_types
+          - controller_notification_templates
+          - controller_teams
+          - controller_organizations
+          - controller_job_templates
+          - controller_projects
+          - controller_execution_environments
+          - controller_workflow_job_templates
+          - controller_settings
+          - controller_instance_groups
+          - controller_labels
+          - controller_schedules
 
   post_tasks:
     - name: Show exported files summary

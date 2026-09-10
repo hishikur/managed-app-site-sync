@@ -18,12 +18,16 @@ Primary AAP ──[export]──> config-data/ ──[import]──> Secondary A
 | `import-to-secondary/` | Secondary AAP に定義情報をインポート |
 | `drift-check/` | Primary と Secondary の定義差分を検出・レポート |
 | `group_vars/all.yml` | 接続先の設定（ホスト名・認証情報） |
+| `config-data/` | エクスポートされた定義データ（自動生成、gitignore 推奨） |
 
 ## 前提条件
 
 - Ansible Core 2.16+
-- AAP 2.4 以前: `infra.controller_configuration` コレクション
-- AAP 2.5 以降: `infra.aap_configuration` + `infra.aap_configuration_extended` コレクション
+- AAP 2.5 以降（推奨）: `ansible.platform` + `infra.aap_configuration` + `infra.aap_configuration_extended` コレクション
+- AAP 2.4 以前: `ansible.controller` + `infra.controller_configuration` コレクション
+
+> **Note:** AAP 2.5 以降は Gateway アーキテクチャのため、API エンドポイントが `/api/controller/v2/` に変わります。  
+> 旧コレクション (`infra.controller_configuration`) はパスの二重付与が発生するため、`infra.aap_configuration_extended` を使用してください。
 
 ## セットアップ
 
@@ -33,6 +37,13 @@ Primary AAP ──[export]──> config-data/ ──[import]──> Secondary A
 ansible-galaxy collection install -r requirements.yml
 ```
 
+AAP バンドルメディアからインストールする場合:
+```bash
+ansible-galaxy collection install /path/to/bundle/collections/ansible-platform-*.tar.gz
+ansible-galaxy collection install /path/to/bundle/collections/infra-aap_configuration-*.tar.gz
+ansible-galaxy collection install /path/to/bundle/collections/infra-aap_configuration_extended-*.tar.gz
+```
+
 ### 2. 接続情報の設定
 
 `group_vars/all.yml` を環境に合わせて編集してください。
@@ -40,21 +51,39 @@ ansible-galaxy collection install -r requirements.yml
 ```yaml
 primary_aap_hostname: "https://your-primary-aap.example.org"
 primary_aap_username: "admin"
-primary_aap_password: "changeme"    # ansible-vault の利用を推奨
+primary_aap_password: "changeme"
+primary_aap_oauthtoken: "your-primary-oauth-token"
 
 secondary_aap_hostname: "https://your-secondary-aap.example.org"
 secondary_aap_username: "admin"
 secondary_aap_password: "changeme"
+secondary_aap_oauthtoken: "your-secondary-oauth-token"
 ```
 
-パスワードは `ansible-vault` で暗号化することを推奨します。
+パスワードおよびトークンは `ansible-vault` で暗号化することを推奨します。
+
+### 3. OAuth トークンの取得（AAP 2.5+）
+
+AAP 2.5 以降の Gateway API では OAuth トークン認証が必要です。
+
+```bash
+# Primary
+curl -k -u admin:password -X POST \
+  https://your-primary-aap.example.org/api/gateway/v1/tokens/
+
+# Secondary
+curl -k -u admin:password -X POST \
+  https://your-secondary-aap.example.org/api/gateway/v1/tokens/
+```
+
+レスポンスの `token` フィールドの値を `group_vars/all.yml` に設定してください。
 
 ## 使い方
 
 ### Primary からエクスポート
 
 ```bash
-ansible-playbook export-from-primary/export.yml
+ansible-playbook export-from-primary/export.yml -e @group_vars/all.yml
 ```
 
 `config-data/primary/` 以下に YAML ファイルとしてエクスポートされます。
@@ -62,7 +91,7 @@ ansible-playbook export-from-primary/export.yml
 ### Secondary へインポート
 
 ```bash
-ansible-playbook import-to-secondary/import.yml
+ansible-playbook import-to-secondary/import.yml -e @group_vars/all.yml
 ```
 
 エクスポートされた定義を Secondary AAP に適用します。  
@@ -71,11 +100,13 @@ ansible-playbook import-to-secondary/import.yml
 ### ドリフトチェック
 
 ```bash
-ansible-playbook drift-check/drift-check.yml
+ansible-playbook drift-check/drift-check.yml -e @group_vars/all.yml
 ```
 
 Primary と Secondary の両方から定義をエクスポートし、差分を検出します。  
 結果は `config-data/drift/drift_report.txt` に出力されます。
+
+> **Note:** `-e @group_vars/all.yml` は必須です。Playbook がサブディレクトリにあるため、プロジェクトルートの `group_vars/` は自動ロードされません。
 
 ## 同期スコープ
 
@@ -92,8 +123,9 @@ Primary と Secondary の両方から定義をエクスポートし、差分を�
 | Schedules | スケジュール定義 |
 | Notification Templates | 通知テンプレート |
 | Teams / Roles (RBAC) | チーム構成とアクセス制御 |
-| Labels / Applications (OAuth2) | ラベル、OAuth2 アプリ |
+| Labels | ラベル |
 | Execution Environments | 実行環境の定義 |
+| Instance Groups | インスタンスグループ定義 |
 | Settings | Controller 全体設定 |
 
 ### 同期されない
@@ -101,9 +133,21 @@ Primary と Secondary の両方から定義をエクスポートし、差分を�
 | リソース | 理由 |
 |---|---|
 | Credential の機密値 | password, ssh_key_data 等はセキュリティ上エクスポート不可。Ansible Vault で別管理 |
+| Applications (OAuth2) | AAP 2.7 + infra.aap_configuration_extended 4.4.0 で既知の不具合あり |
 | ジョブ実行ログ・履歴 | 各ノードの実行履歴は独立 |
 | 認証トークン | セッション情報はエクスポート不可 |
 | ライセンス / Manifest | 各ノードで個別に適用 |
+
+### ドリフトチェックで検出される想定差分
+
+以下は同期前でも差異として検出されますが、ノード固有の値であるため正常です。
+
+| 項目 | 理由 |
+|---|---|
+| `INSTALL_UUID` | ノードごとに異なる固有ID |
+| `AUTOMATION_ANALYTICS_LAST_*` | Analytics 収集タイムスタンプ |
+| `CANDLEPIN_*` | サブスクリプション固有値 |
+| Schedule の `dtstart` / `rrule` | インストール日時の違い |
 
 ## 定期実行（運用例）
 
@@ -111,13 +155,13 @@ Primary と Secondary の両方から定義をエクスポートし、差分を�
 
 ```bash
 # Primary: 毎日 2:00 にエクスポート
-0 2 * * * cd /opt/aap-sync && ansible-playbook export-from-primary/export.yml
+0 2 * * * cd /opt/aap-sync && ansible-playbook export-from-primary/export.yml -e @group_vars/all.yml
 
 # Secondary: 毎日 3:00 にインポート
-0 3 * * * cd /opt/aap-sync && ansible-playbook import-to-secondary/import.yml
+0 3 * * * cd /opt/aap-sync && ansible-playbook import-to-secondary/import.yml -e @group_vars/all.yml
 
 # ドリフトチェック: 毎週月曜 6:00
-0 6 * * 1 cd /opt/aap-sync && ansible-playbook drift-check/drift-check.yml
+0 6 * * 1 cd /opt/aap-sync && ansible-playbook drift-check/drift-check.yml -e @group_vars/all.yml
 ```
 
 ### AAP Schedule で実行
@@ -125,9 +169,14 @@ Primary と Secondary の両方から定義をエクスポートし、差分を�
 AAP 自身の Job Template + Schedule 機能で定期実行することも可能です。  
 実行履歴と通知が AAP UI で管理できるため、こちらを推奨します。
 
+## 既知の制限事項
+
+- **Applications (OAuth2)** のエクスポートは `infra.aap_configuration_extended` 4.4.0 + AAP 2.7 環境で `PlatformError` が発生するため、`input_tag` から除外しています。コレクションの将来バージョンで修正される見込みです。
+- **Credential の機密値**（パスワード、SSH 秘密鍵等）はエクスポート時に `$encrypted$` に置換されます。同期先では Ansible Vault や HashiCorp Vault 等で別途注入する必要があります。
+
 ## 参考
 
-- [infra.controller_configuration](https://github.com/redhat-cop/infra.controller_configuration) (AAP ≤2.4)
 - [infra.aap_configuration](https://github.com/redhat-cop/infra.aap_configuration) (AAP 2.5+)
+- [infra.aap_configuration_extended](https://github.com/redhat-cop/infra.aap_configuration_extended) (AAP 2.5+)
+- [infra.controller_configuration](https://github.com/redhat-cop/infra.controller_configuration) (AAP ≤2.4)
 - [AAP CaC Template](https://github.com/redhat-cop/aap_configuration_template)
-- [Red Hat Blog - CaC with GitOps](https://www.redhat.com/en/blog/ansible-automation-controller-cac-gitops)

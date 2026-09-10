@@ -1,9 +1,8 @@
 ---
 # Drift check: export from both Primary and Secondary, then diff
-# Runs independently of the export/import cycle
 #
 # Usage:
-#   ansible-playbook drift-check/drift-check.yml
+#   ansible-playbook drift-check/drift-check.yml -e @group_vars/all.yml
 #
 - name: Export from Primary for drift comparison
   hosts: localhost
@@ -11,11 +10,11 @@
   gather_facts: false
 
   vars:
-    controller_hostname: "{{ primary_aap_hostname }}"
-    controller_username: "{{ primary_aap_username }}"
-    controller_password: "{{ primary_aap_password }}"
-    controller_oauthtoken: "{{ primary_aap_oauthtoken | default(omit) }}"
-    controller_validate_certs: "{{ primary_aap_validate_certs }}"
+    aap_hostname: "{{ primary_aap_hostname }}"
+    aap_username: "{{ primary_aap_username }}"
+    aap_password: "{{ primary_aap_password }}"
+    aap_oauthtoken: "{{ primary_aap_oauthtoken | default(omit) }}"
+    aap_validate_certs: "{{ primary_aap_validate_certs }}"
     output_path: "{{ playbook_dir }}/../config-data/drift/primary"
 
   pre_tasks:
@@ -29,7 +28,23 @@
         - directory
 
   roles:
-    - role: infra.controller_configuration.filetree_create
+    - role: infra.aap_configuration_extended.filetree_create
+      vars:
+        input_tag:
+          - controller_inventories
+          - controller_credentials
+          - controller_credential_types
+          - controller_notification_templates
+          - controller_teams
+          - controller_organizations
+          - controller_job_templates
+          - controller_projects
+          - controller_execution_environments
+          - controller_workflow_job_templates
+          - controller_settings
+          - controller_instance_groups
+          - controller_labels
+          - controller_schedules
 
 - name: Export from Secondary for drift comparison
   hosts: localhost
@@ -37,11 +52,11 @@
   gather_facts: false
 
   vars:
-    controller_hostname: "{{ secondary_aap_hostname }}"
-    controller_username: "{{ secondary_aap_username }}"
-    controller_password: "{{ secondary_aap_password }}"
-    controller_oauthtoken: "{{ secondary_aap_oauthtoken | default(omit) }}"
-    controller_validate_certs: "{{ secondary_aap_validate_certs }}"
+    aap_hostname: "{{ secondary_aap_hostname }}"
+    aap_username: "{{ secondary_aap_username }}"
+    aap_password: "{{ secondary_aap_password }}"
+    aap_oauthtoken: "{{ secondary_aap_oauthtoken | default(omit) }}"
+    aap_validate_certs: "{{ secondary_aap_validate_certs }}"
     output_path: "{{ playbook_dir }}/../config-data/drift/secondary"
 
   pre_tasks:
@@ -55,7 +70,23 @@
         - directory
 
   roles:
-    - role: infra.controller_configuration.filetree_create
+    - role: infra.aap_configuration_extended.filetree_create
+      vars:
+        input_tag:
+          - controller_inventories
+          - controller_credentials
+          - controller_credential_types
+          - controller_notification_templates
+          - controller_teams
+          - controller_organizations
+          - controller_job_templates
+          - controller_projects
+          - controller_execution_environments
+          - controller_workflow_job_templates
+          - controller_settings
+          - controller_instance_groups
+          - controller_labels
+          - controller_schedules
 
 - name: Compare Primary vs Secondary definitions
   hosts: localhost
@@ -86,11 +117,11 @@
       ansible.builtin.set_fact:
         primary_rel_files: >-
           {{ primary_files.files | map(attribute='path')
-             | map('replace', drift_primary_dir + '/', '')
+             | map('regex_replace', '^.*/drift/primary/', '')
              | sort | list }}
         secondary_rel_files: >-
           {{ secondary_files.files | map(attribute='path')
-             | map('replace', drift_secondary_dir + '/', '')
+             | map('regex_replace', '^.*/drift/secondary/', '')
              | sort | list }}
 
     - name: Files only in Primary (missing from Secondary)
@@ -189,5 +220,5 @@
 
     - name: Warn if drift detected
       ansible.builtin.debug:
-        msg: "WARNING: Drift detected in {{ drifted_files | length }} file(s). Review {{ drift_report_file }}"
+        msg: "WARNING: Drift detected. Review {{ drift_report_file }}"
       when: drifted_files | length > 0 or only_in_primary | length > 0

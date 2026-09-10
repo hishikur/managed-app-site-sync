@@ -1,6 +1,15 @@
 ---
 collections:
-  - name: ansible.controller
-    version: ">=4.6.0"
-  - name: infra.controller_configuration
-    version: ">=2.9.0"
+  # AAP 2.5+ (Gateway architecture)
+  - name: ansible.platform
+    version: ">=2.7.0"
+  - name: infra.aap_configuration
+    version: ">=4.0.0"
+  - name: infra.aap_configuration_extended
+    version: ">=4.0.0"
+
+  # AAP 2.4 and earlier (legacy)
+  # - name: ansible.controller
+  #   version: ">=4.6.0"
+  # - name: infra.controller_configuration
+  #   version: ">=2.9.0"
