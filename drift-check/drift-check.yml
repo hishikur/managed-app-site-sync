@@ -5,12 +5,38 @@
 # Usage:
 #   ansible-playbook drift-check/drift-check.yml -e @group_vars/all.yml
 #
-- name: Check AAP connectivity
+- name: Rotate and check AAP connectivity
   hosts: localhost
   connection: local
   gather_facts: false
 
+  vars:
+    drift_dir: "{{ playbook_dir }}/../config-data/drift"
+    drift_keep_generations: 3
+
   tasks:
+    - name: Remove oldest generation (drift.{{ drift_keep_generations }})
+      ansible.builtin.file:
+        path: "{{ drift_dir }}.{{ drift_keep_generations }}"
+        state: absent
+
+    - name: Rotate previous generations
+      ansible.builtin.command:
+        cmd: "mv {{ drift_dir }}.{{ item - 1 }} {{ drift_dir }}.{{ item }}"
+        removes: "{{ drift_dir }}.{{ item - 1 }}"
+      loop: "{{ range(drift_keep_generations, 1, -1) | list }}"
+
+    - name: Save current as drift.1
+      ansible.builtin.command:
+        cmd: "mv {{ drift_dir }} {{ drift_dir }}.1"
+        removes: "{{ drift_dir }}"
+
+    - name: Create fresh drift directory
+      ansible.builtin.file:
+        path: "{{ drift_dir }}"
+        state: directory
+        mode: "0755"
+
     - name: Check Primary AAP connectivity
       ansible.builtin.uri:
         url: "{{ primary_aap_hostname }}/api/gateway/v1/"
