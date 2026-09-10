@@ -14,6 +14,7 @@
     controller_hostname: "{{ primary_aap_hostname }}"
     controller_username: "{{ primary_aap_username }}"
     controller_password: "{{ primary_aap_password }}"
+    controller_oauthtoken: "{{ primary_aap_oauthtoken | default(omit) }}"
     controller_validate_certs: "{{ primary_aap_validate_certs }}"
 
     # filetree_create output directory
