@@ -5,6 +5,32 @@
 # Usage:
 #   ansible-playbook export-from-primary/export.yml -e @group_vars/all.yml
 #
+- name: Rotate previous exports
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    export_dir: "{{ playbook_dir }}/../config-data/primary"
+    export_keep_generations: 3
+
+  tasks:
+    - name: Remove oldest generation (primary.{{ export_keep_generations }})
+      ansible.builtin.file:
+        path: "{{ export_dir }}.{{ export_keep_generations }}"
+        state: absent
+
+    - name: Rotate previous generations
+      ansible.builtin.command:
+        cmd: "mv {{ export_dir }}.{{ item - 1 }} {{ export_dir }}.{{ item }}"
+        removes: "{{ export_dir }}.{{ item - 1 }}"
+      loop: "{{ range(export_keep_generations, 1, -1) | list }}"
+
+    - name: Save current as primary.1
+      ansible.builtin.command:
+        cmd: "mv {{ export_dir }} {{ export_dir }}.1"
+        removes: "{{ export_dir }}"
+
 - name: Export configuration from Primary AAP
   hosts: localhost
   connection: local

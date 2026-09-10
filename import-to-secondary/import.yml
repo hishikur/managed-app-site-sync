@@ -1,6 +1,6 @@
 ---
 # Import AAP Controller configuration to Secondary node
-# Uses infra.aap_configuration_extended.filetree_read + dispatch (AAP 2.5+)
+# Uses infra.aap_configuration_extended.filetree_read + infra.aap_configuration.dispatch (AAP 2.5+)
 #
 # Usage:
 #   ansible-playbook import-to-secondary/import.yml -e @group_vars/all.yml
@@ -17,11 +17,61 @@
     aap_oauthtoken: "{{ secondary_aap_oauthtoken | default(omit) }}"
     aap_validate_certs: "{{ secondary_aap_validate_certs }}"
 
-    # filetree_read input directory (output of export)
+    # filetree_read requires orgs/dir_orgs_vars, but we override all paths
+    # to point at the flat export directory produced by filetree_create
+    orgs: "unused"
     dir_orgs_vars: "{{ playbook_dir }}/../config-data/primary"
-    dir_global_vars: "{{ playbook_dir }}/../config-data/primary"
+
+    # Override every filetree path to the export root so recurse:true finds all files
+    filetree_controller_settings: "{{ dir_orgs_vars }}/"
+    filetree_aap_organizations: "{{ dir_orgs_vars }}/"
+    filetree_controller_labels: "{{ dir_orgs_vars }}/"
+    filetree_aap_user_accounts: "{{ dir_orgs_vars }}/"
+    filetree_aap_teams: "{{ dir_orgs_vars }}/"
+    filetree_controller_credential_types: "{{ dir_orgs_vars }}/"
+    filetree_controller_credentials: "{{ dir_orgs_vars }}/"
+    filetree_controller_credential_input_sources: "{{ dir_orgs_vars }}/"
+    filetree_controller_notifications: "{{ dir_orgs_vars }}/"
+    filetree_controller_projects: "{{ dir_orgs_vars }}/"
+    filetree_controller_execution_environments: "{{ dir_orgs_vars }}/"
+    filetree_aap_applications: "{{ dir_orgs_vars }}/"
+    filetree_controller_inventories: "{{ dir_orgs_vars }}/"
+    filetree_controller_inventory_sources: "{{ dir_orgs_vars }}/"
+    filetree_controller_instance_groups: "{{ dir_orgs_vars }}/"
+    filetree_controller_hosts: "{{ dir_orgs_vars }}/"
+    filetree_controller_groups: "{{ dir_orgs_vars }}/"
+    filetree_controller_templates: "{{ dir_orgs_vars }}/"
+    filetree_controller_workflow_job_templates: "{{ dir_orgs_vars }}/"
+    filetree_controller_schedules: "{{ dir_orgs_vars }}/"
+    filetree_controller_roles: "{{ dir_orgs_vars }}/"
 
   pre_tasks:
+    - name: Find vault placeholder variables in export data
+      ansible.builtin.shell: >
+        grep -roh 'vaulted_[a-zA-Z0-9_]*' {{ dir_orgs_vars }}/ 2>/dev/null | sort -u
+      register: vault_placeholders
+      changed_when: false
+      failed_when: false
+
+    - name: Define dummy vault variables to prevent template errors
+      ansible.builtin.set_fact:
+        "{{ item }}": ""
+      loop: "{{ vault_placeholders.stdout_lines | default([]) }}"
+      when: vault_placeholders.stdout_lines | default([]) | length > 0
+
+    - name: Temporarily move ORGANIZATIONLESS directory out of import scope
+      ansible.builtin.command:
+        cmd: "mv {{ dir_orgs_vars }}/ORGANIZATIONLESS {{ dir_orgs_vars }}/../.ORGANIZATIONLESS.bak"
+        removes: "{{ dir_orgs_vars }}/ORGANIZATIONLESS"
+
+    - name: Fix empty simplified_workflow_nodes fields
+      ansible.builtin.shell: >
+        find {{ dir_orgs_vars }}/ -name '*.yaml' -o -name '*.yml' |
+        xargs grep -l 'simplified_workflow_nodes:$' 2>/dev/null |
+        xargs -r sed -i 's/simplified_workflow_nodes:$/simplified_workflow_nodes: []/'
+      changed_when: false
+      failed_when: false
+
     - name: Check export data exists
       ansible.builtin.stat:
         path: "{{ dir_orgs_vars }}"
@@ -46,9 +96,14 @@
 
   roles:
     - role: infra.aap_configuration_extended.filetree_read
-    - role: infra.aap_configuration_extended.dispatch
+    - role: infra.aap_configuration.dispatch
 
   post_tasks:
+    - name: Restore ORGANIZATIONLESS directory
+      ansible.builtin.command:
+        cmd: "mv {{ dir_orgs_vars }}/../.ORGANIZATIONLESS.bak {{ dir_orgs_vars }}/ORGANIZATIONLESS"
+        removes: "{{ dir_orgs_vars }}/../.ORGANIZATIONLESS.bak"
+
     - name: Record import timestamp
       ansible.builtin.copy:
         content: |

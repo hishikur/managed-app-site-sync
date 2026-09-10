@@ -86,7 +86,8 @@ curl -k -u admin:password -X POST \
 ansible-playbook export-from-primary/export.yml -e @group_vars/all.yml
 ```
 
-`config-data/primary/` 以下に YAML ファイルとしてエクスポートされます。
+`config-data/primary/` 以下に YAML ファイルとしてエクスポートされます。  
+過去3世代分のエクスポートが `config-data/primary.1/` ～ `primary.3/` に自動保持されます。
 
 ### Secondary へインポート
 
@@ -95,7 +96,12 @@ ansible-playbook import-to-secondary/import.yml -e @group_vars/all.yml
 ```
 
 エクスポートされた定義を Secondary AAP に適用します。  
-依存関係を考慮した順序（Organization → Credential → Project → Inventory → Template → ...）で実行されます。
+`infra.aap_configuration.dispatch` ロールにより、依存関係を考慮した順序（Organization → Credential → Project → Inventory → Template → ...）で実行されます。
+
+Import 時の自動処理:
+- `ORGANIZATIONLESS` ディレクトリ（組織に紐づかない内蔵Credential）は自動除外
+- Credential の vault プレースホルダ変数はダミー値で置換（機密値は同期不可）
+- 空の `simplified_workflow_nodes` フィールドは自動修正
 
 ### ドリフトチェック
 
@@ -104,7 +110,10 @@ ansible-playbook drift-check/drift-check.yml -e @group_vars/all.yml
 ```
 
 Primary と Secondary の両方から定義をエクスポートし、差分を検出します。  
-結果は `config-data/drift/drift_report.txt` に出力されます。
+結果は `config-data/drift/drift_report.txt` に出力されます。  
+過去3世代分のレポートが `config-data/drift.1/` ～ `drift.3/` に自動保持されます。
+
+AAP ノードが停止している場合でも、エラーレポートが生成されます（Playbook は正常終了）。
 
 > **Note:** `-e @group_vars/all.yml` は必須です。Playbook がサブディレクトリにあるため、プロジェクトルートの `group_vars/` は自動ロードされません。
 
@@ -148,6 +157,7 @@ Primary と Secondary の両方から定義をエクスポートし、差分を�
 | `AUTOMATION_ANALYTICS_LAST_*` | Analytics 収集タイムスタンプ |
 | `CANDLEPIN_*` | サブスクリプション固有値 |
 | Schedule の `dtstart` / `rrule` | インストール日時の違い |
+| ファイル名の ID プレフィックス | AAP ノード間で内部 ID が異なるため、同じリソースでもファイル名が変わる |
 
 ## 定期実行（運用例）
 
@@ -172,7 +182,9 @@ AAP 自身の Job Template + Schedule 機能で定期実行することも可能
 ## 既知の制限事項
 
 - **Applications (OAuth2)** のエクスポートは `infra.aap_configuration_extended` 4.4.0 + AAP 2.7 環境で `PlatformError` が発生するため、`input_tag` から除外しています。コレクションの将来バージョンで修正される見込みです。
-- **Credential の機密値**（パスワード、SSH 秘密鍵等）はエクスポート時に `$encrypted$` に置換されます。同期先では Ansible Vault や HashiCorp Vault 等で別途注入する必要があります。
+- **Credential の機密値**（パスワード、SSH 秘密鍵等）はエクスポート時に vault プレースホルダ（`{{ vaulted_xxx }}`）に置換されます。同期先では Ansible Vault や HashiCorp Vault 等で別途注入する必要があります。
+- **controller_settings のインポート後**、Secondary からのエクスポートで JSON 解析エラーが発生する場合があります（`AUTOMATION_ANALYTICS_LAST_ENTRIES` 等の Python dict 形式の値）。settings は同期スコープから除外することを検討してください。
+- **ドリフトチェックのファイル名比較**では、AAP 内部 ID の違いにより同一リソースが別ファイルとして検出されます（例: Primary=`11_NS - Deploy DB.yaml` / Secondary=`13_NS - Deploy DB.yaml`）。
 
 ## 参考
 
